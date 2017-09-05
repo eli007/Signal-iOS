@@ -284,36 +284,44 @@ NSString *const Signal_Message_MarkAsRead_Identifier = @"Signal_Message_MarkAsRe
 #pragma mark Register device for Push Notification locally
 
 - (TOCFuture *)registerPushNotificationFuture {
+    OWSAssert([NSThread isMainThread]);
+
     self.pushNotificationFutureSource = [TOCFutureSource new];
     [UIApplication.sharedApplication registerForRemoteNotifications];
     return self.pushNotificationFutureSource.future;
 }
 
 - (void)requestPushTokenWithSuccess:(pushTokensSuccessBlock)success failure:(failedPushRegistrationBlock)failure {
+
     if (!self.wantRemoteNotifications) {
         DDLogWarn(@"%@ Using fake push tokens", self.tag);
         success(@"fakePushToken", @"fakeVoipToken");
         return;
     }
 
-    TOCFuture *requestPushTokenFuture = [self registerPushNotificationFuture];
+    // registerPushNotificationFuture must be called on the main thread.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        TOCFuture *requestPushTokenFuture = [self registerPushNotificationFuture];
 
-    [requestPushTokenFuture thenDo:^(NSData *pushTokenData) {
-      NSString *pushToken = [pushTokenData ows_tripToken];
-      TOCFuture *pushKit  = [self registerPushKitNotificationFuture];
+        // We'd like to do this work off the main thread, but TOCFuture doesn't
+        // seem to offer a way to specify the thread on which thenDo: is performed.
+        [requestPushTokenFuture thenDo:^(NSData *pushTokenData) {
+            NSString *pushToken = [pushTokenData ows_tripToken];
+            TOCFuture *pushKit = [self registerPushKitNotificationFuture];
 
-      [pushKit thenDo:^(NSString *voipToken) {
-        success(pushToken, voipToken);
-      }];
+            [pushKit thenDo:^(NSString *voipToken) {
+                success(pushToken, voipToken);
+            }];
 
-      [pushKit catchDo:^(NSError *error) {
-        failure(error);
-      }];
-    }];
+            [pushKit catchDo:^(NSError *error) {
+                failure(error);
+            }];
+        }];
 
-    [requestPushTokenFuture catchDo:^(NSError *error) {
-      failure(error);
-    }];
+        [requestPushTokenFuture catchDo:^(NSError *error) {
+            failure(error);
+        }];
+    });
 }
 
 - (UIUserNotificationCategory *)fullNewMessageNotificationCategory {
